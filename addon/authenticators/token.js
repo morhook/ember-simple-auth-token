@@ -127,11 +127,11 @@ export default Base.extend({
     return new Ember.RSVP.Promise((resolve, reject) => {
       const data = this.getAuthenticateData(credentials);
 
-      this.makeRequest(data, headers).then(response => {
+      this.makeRequest(data, headers).done(response => {
         Ember.run(() => {
           resolve(this.getResponseData(response));
         });
-      }, xhr => {
+      }).fail(xhr => {
         Ember.run(() => { reject(xhr.responseJSON || xhr.responseText); });
       });
     });
