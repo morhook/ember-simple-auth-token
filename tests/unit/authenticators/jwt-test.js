@@ -4,6 +4,9 @@ import startApp from '../../helpers/start-app';
 import Ember from 'ember';
 import JWT from 'ember-simple-auth-token/authenticators/jwt';
 import Configuration from 'ember-simple-auth-token/configuration';
+import Pretender from 'pretender';
+
+const { tryInvoke } = Ember;
 
 var App;
 
@@ -25,6 +28,7 @@ module('JWT Authenticator', {
     App = startApp();
     App.xhr = sinon.useFakeXMLHttpRequest();
     App.server = sinon.fakeServer.create();
+    App.serverPretender = new Pretender();
     App.server.autoRespond = true;
     App.authenticator = JWT.create();
     sinon.spy(Ember.run, 'cancel');
@@ -37,6 +41,7 @@ module('JWT Authenticator', {
   afterEach() {
     Ember.run(App, App.destroy);
     Ember.$.ajax.restore();
+    tryInvoke(App.serverPretender, 'shutdown');
 
     App.xhr.restore();
     Ember.run.cancel.restore();
@@ -491,7 +496,7 @@ test('#restore schedule access token refresh and refreshes it when time is appro
 });
 
 test('#authenticate sends an ajax request to the token endpoint', assert => {
-  assert.expect(1);
+  assert.expect(4);
 
   const jwt = JWT.create();
 
@@ -500,19 +505,25 @@ test('#authenticate sends an ajax request to the token endpoint', assert => {
     password: 'password'
   };
 
-  App.authenticator.authenticate(credentials);
+  let token = {},
+    expiresAt = new Date().getTime() + 300000;
+  token[jwt.identificationField] = 'test@test.com';
+  token[jwt.tokenExpireName] = expiresAt;
 
-  Ember.run(() => {
-    var args = Ember.$.ajax.getCall(0).args[0];
-    delete args.beforeSend;
-    assert.deepEqual(args, {
-      url: jwt.serverTokenEndpoint,
-      method: 'POST',
-      data: '{"password":"password","username":"username"}',
-      dataType: 'json',
-      contentType: 'application/json',
-      headers: {}
-    });
+  token = createFakeToken(token);
+  let refreshToken = createFakeRefreshToken();
+  App.serverPretender.post(jwt.serverTokenEndpoint, () => [
+    201,
+    { 'Content-Type': 'application/json' },
+    '{ "token": "' + token + '", "refresh_token": "' + refreshToken + '" }'
+  ]);
+
+  App.authenticator.authenticate(credentials).then(()=>{
+    let [request] = App.serverPretender.handledRequests;
+    assert.equal(request.url, '/api/token-auth/');
+    assert.equal(request.method, 'POST');
+    assert.deepEqual(JSON.parse(request.requestBody), { password: 'password', username: 'username' });
+    assert.equal(request.requestHeaders['content-type'], 'text/plain;charset=UTF-8');
   });
 });
 
@@ -526,12 +537,12 @@ test('#authenticate rejects with invalid credentials', assert => {
     password: 'password'
   };
 
-  App.server.respondWith('POST', jwt.serverTokenEndpoint, [
+  App.serverPretender.post(jwt.serverTokenEndpoint, () => {
     400, {
       'Content-Type': 'application/json'
     },
     '{"message":["Unable to login with provided credentials."]}'
-  ]);
+  });
 
   Ember.run(() => {
     App.authenticator.authenticate(credentials).then(null, () => {
@@ -560,12 +571,12 @@ test('#authenticate schedules a token refresh when `refreshAccessTokens` is true
     password: 'password'
   };
 
-  App.server.respondWith('POST', jwt.serverTokenEndpoint, [
-    201, {
-      'Content-Type': 'application/json'
-    },
-    '{ "token": "' + token + '", "refresh_token": "' + refreshToken + '" }'
-  ]);
+  App.serverPretender.post(jwt.serverTokenEndpoint, () => [
+          201, {
+            'Content-Type': 'application/json'
+          },
+          '{ "token": "' + token + '", "refresh_token": "' + refreshToken + '" }'
+      ]);
 
   Ember.run(() => {
     App.authenticator.authenticate(credentials).then(() => {
@@ -595,7 +606,7 @@ test('#authenticate does not schedule a token refresh when `refreshAccessTokens`
     password: 'password'
   };
 
-  App.server.respondWith('POST', jwt.serverTokenEndpoint, [
+  App.serverPretender.post(jwt.serverTokenEndpoint, () => [
     201, {
       'Content-Type': 'application/json'
     },
@@ -604,6 +615,7 @@ test('#authenticate does not schedule a token refresh when `refreshAccessTokens`
 
   App.authenticator.refreshAccessTokens = false;
 
+  debugger;
   Ember.run(() => {
     App.authenticator.authenticate(credentials).then(() => {
       // Check that Ember.run.later ran.
@@ -614,7 +626,7 @@ test('#authenticate does not schedule a token refresh when `refreshAccessTokens`
 });
 
 test('#authenticate sends an AJAX request with custom headers', assert => {
-  assert.expect(1);
+  assert.expect(5);
 
   const credentials = {
     identification: 'username',
@@ -627,24 +639,41 @@ test('#authenticate sends an AJAX request with custom headers', assert => {
     Accept: 'application/vnd.api+json'
   };
 
-  App.authenticator = JWT.create();
-  App.authenticator.authenticate(credentials);
+  const jwt = JWT.create(),
+    expiresAt = 3;
 
-  Ember.run(() => {
-    var args = Ember.$.ajax.getCall(0).args[0];
-    delete args.beforeSend;
-    assert.deepEqual(args, {
-      url: '/api/token-auth/',
-      method: 'POST',
-      data: '{"password":"password","username":"username"}',
-      dataType: 'json',
-      contentType: 'application/json',
-      headers: {
-        'X-API-KEY': '123-abc',
-        'X-ANOTHER-HEADER': 0,
-        Accept: 'application/vnd.api+json'
-      }
-    });
+  App.authenticator = jwt;
+
+  let token = {};
+  token[jwt.identificationField] = 'test@test.com';
+  token[jwt.tokenExpireName] = expiresAt;
+
+  token = createFakeToken(token);
+
+  let refreshToken = createFakeRefreshToken();
+
+  App.serverPretender.post(jwt.serverTokenEndpoint, () => [
+    201, {
+      'Content-Type': 'application/json'
+    },
+    '{ "token": "' + token + '", "refresh_token": "' + refreshToken + '" }'
+  ]);
+
+
+  App.authenticator.authenticate(credentials).then(() => {
+    let [request] = App.serverPretender.handledRequests;
+    assert.equal(request.url, '/api/token-auth/');
+    assert.equal(request.method, 'POST');
+    assert.deepEqual(JSON.parse(request.requestBody), { password: 'password', username: 'username' });
+    assert.equal(request.requestHeaders['content-type'], 'text/plain;charset=UTF-8');
+    assert.deepEqual(request.requestHeaders, {
+     'x-api-key': '123-abc',
+     'x-another-header': '0',
+     accept: 'application/vnd.api+json',
+     'content-type': 'text/plain;charset=UTF-8',
+     'Content-Type': 'text/plain;charset=UTF-8'
+   });
+
   });
 });
 

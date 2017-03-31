@@ -1,6 +1,7 @@
 import Ember from 'ember';
 import Configuration from '../configuration';
 import TokenAuthenticator from './token';
+import fetch from 'ember-network/fetch';
 
 const assign = Ember.assign || Ember.merge;
 
@@ -296,25 +297,24 @@ export default TokenAuthenticator.extend({
     @method makeRequest
     @private
   */
-  makeRequest(url, data, headers) {
-    return Ember.$.ajax({
-      url: url,
-      method: 'POST',
-      data: JSON.stringify(data),
-      dataType: 'json',
-      contentType: 'application/json',
-      headers: this.headers,
-      beforeSend: (xhr, settings) => {
-        if(this.headers['Accept'] === null || this.headers['Accept'] === undefined) {
-          xhr.setRequestHeader('Accept', settings.accepts.json);
-        }
+  makeRequest(url, data, headers = {}) {
+    let requestOptions = {};
+    let body = JSON.stringify(data);
 
-        if (headers) {
-          Object.keys(headers).forEach((key) => {
-            xhr.setRequestHeader(key, headers[key]);
-          });
-        }
-      }
+    assign(headers, this.headers);
+    if(this.headers['Accept'] === null || this.headers['Accept'] ===
+undefined) {
+      headers['Accept'] = 'application/json, text/javascript';
+    }
+
+    assign(requestOptions, {
+      body,
+      method: 'POST',
+      headers
+    });
+
+    return fetch(url, requestOptions).then(response => {
+      return response.json();
     });
   },
 
